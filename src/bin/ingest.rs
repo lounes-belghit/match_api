@@ -20,6 +20,10 @@ enum Command {
         #[arg(long, short, default_value_t = 200)]
         limit: i64,
     },
+    Stats {
+        #[arg(long, short, default_value_t = 1)]
+        seasons: usize,
+    },
 }
 
 #[tokio::main]
@@ -37,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Backfill { seasons } => matchs_api::ingest::backfill(&state, seasons).await?,
         Command::Live => matchs_api::ingest::refresh_live(&state).await?,
         Command::Events { limit } => matchs_api::ingest::ingest_events(&state, limit).await?,
+        Command::Stats { seasons } => matchs_api::ingest::ingest_stats(&state, seasons).await?,
     }
     Ok(())
 }

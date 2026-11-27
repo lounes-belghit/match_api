@@ -3,6 +3,7 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Deserializer};
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -79,6 +80,64 @@ impl ClubDto {
         } else {
             self.surname.clone()
         }
+    }
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct NationalityDto {
+    #[serde(default, deserialize_with = "nullable_string")]
+    pub name: String,
+    pub imageUrl: Option<String>,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayerDto {
+    pub id: serde_json::Value,
+    #[serde(default, deserialize_with = "nullable_string")]
+    pub name: String,
+    #[serde(default)]
+    pub jersey: Option<i32>,
+    #[serde(default)]
+    pub age: Option<i32>,
+    #[serde(default, deserialize_with = "nullable_string")]
+    pub position: String,
+    pub imageUrl: Option<String>,
+    #[serde(default)]
+    pub nationality: Option<NationalityDto>,
+}
+
+impl PlayerDto {
+    pub fn id_i64(&self) -> Option<i64> {
+        self.id.as_i64().or_else(|| self.id.as_str()?.parse().ok())
+    }
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlayersResponse {
+    #[serde(default, alias = "goalkeepers")]
+    pub goalKeepers: Vec<PlayerDto>,
+    #[serde(default)]
+    pub defenders: Vec<PlayerDto>,
+    #[serde(default)]
+    pub midfielders: Vec<PlayerDto>,
+    #[serde(default, alias = "strikers")]
+    pub forwards: Vec<PlayerDto>,
+    #[serde(default)]
+    pub attackers: Vec<PlayerDto>,
+}
+
+impl PlayersResponse {
+    pub fn into_players(self) -> Vec<PlayerDto> {
+        self.goalKeepers
+            .into_iter()
+            .chain(self.defenders)
+            .chain(self.midfielders)
+            .chain(self.forwards)
+            .chain(self.attackers)
+            .collect()
     }
 }
 
@@ -460,6 +519,308 @@ impl SourceClient {
             });
         }
         Ok(events)
+    }
+
+    pub async fn clubs(&self, group_id: i64) -> Result<Vec<ClubDto>> {
+        self.get_json(&format!("/clubs-data?division={group_id}"))
+            .await
+    }
+
+    pub async fn players(&self, club_id: i64, season_id: i64) -> Result<Vec<PlayerDto>> {
+        let response: PlayersResponse = self
+            .get_json(&format!("/club/{club_id}/players-data?season={season_id}"))
+            .await?;
+        Ok(response.into_players())
+    }
+
+    pub fn player_url(&self, source_id: i64) -> String {
+        self.url(&format!("/player/{source_id}"))
+    }
+
+    pub async fn player_stats(&self, group_id: i64) -> Result<Vec<RawPlayerStat>> {
+        let path = match self.spec.competition_code {
+            "L1" => "/statistics".to_string(),
+            "L2" => format!("/statistics/group/{group_id}"),
+            _ => format!("/statistics?ajax=1&group={group_id}"),
+        };
+        let url = self.url(&path);
+        let html = self.get_text(&url).await?;
+        parse_player_stats(&html)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawPlayerStat {
+    pub source_player_id: Option<i64>,
+    pub name: String,
+    pub club_logo_path: Option<String>,
+    pub club_name: Option<String>,
+    pub stat: &'static str,
+    pub value: i32,
+    pub rank: Option<i32>,
+    pub jersey: Option<i32>,
+}
+
+pub fn parse_player_stats(html: &str) -> Result<Vec<RawPlayerStat>> {
+    let doc = Html::parse_document(html);
+    let mut raw = Vec::new();
+    raw.extend(parse_stat_cards(&doc)?);
+    raw.extend(parse_incident_cards(&doc)?);
+    raw.extend(parse_stat_tables(&doc)?);
+    Ok(dedupe_player_stats(raw))
+}
+
+fn parse_stat_cards(doc: &Html) -> Result<Vec<RawPlayerStat>> {
+    let anchors = Selector::parse("a[href*='/player/']")?;
+    let card = Selector::parse(".stat-player-card")?;
+    let name = Selector::parse(".player-name.flex-grow-1, .player-name-club > .player-name")?;
+    let rank = Selector::parse(".player-rank")?;
+    let value = Selector::parse(".player-goals-stat > span, .player-stat > span")?;
+    let club_logo = Selector::parse(".player-club-logo img")?;
+    let club_name = Selector::parse(".player-club-logo span")?;
+    let mut stats = Vec::new();
+
+    for anchor in doc.select(&anchors) {
+        let Some(element) = anchor.select(&card).next() else {
+            continue;
+        };
+        let classes = format!("{} {}", ancestor_classes(anchor), anchor_classes(&anchor));
+        let Some(stat) = stat_kind(&classes) else {
+            continue;
+        };
+        let Some(source_player_id) = player_id_from_href(&classes, &anchor) else {
+            continue;
+        };
+        let Some(name) = normalized_child(&element, &name) else {
+            continue;
+        };
+        let Some(value) = normalized_child(&element, &value).and_then(|text| parse_i32(&text))
+        else {
+            continue;
+        };
+        let logo = element
+            .select(&club_logo)
+            .next()
+            .and_then(|img| logo_path(img.value().attr("src")));
+        let club = element
+            .select(&club_name)
+            .next()
+            .map(|el| el.text().collect::<String>())
+            .map(normalize_text)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                element
+                    .select(&club_logo)
+                    .next()
+                    .and_then(|img| img.value().attr("alt"))
+                    .map(|value| normalize_text(value.to_string()))
+                    .filter(|value| !value.is_empty())
+            });
+        stats.push(RawPlayerStat {
+            source_player_id: Some(source_player_id),
+            name,
+            club_logo_path: logo,
+            club_name: club,
+            stat,
+            value,
+            rank: normalized_child(&element, &rank).and_then(|text| parse_i32(&text)),
+            jersey: None,
+        });
+    }
+    Ok(stats)
+}
+
+fn parse_incident_cards(doc: &Html) -> Result<Vec<RawPlayerStat>> {
+    let cards = Selector::parse(".players-stats-lower .stat-player-incident")?;
+    let title = Selector::parse(".incident-title")?;
+    let name = Selector::parse(".incident-info .player-name")?;
+    let value = Selector::parse(".incident-count")?;
+    let mut stats = Vec::new();
+
+    for element in doc.select(&cards) {
+        let Some(kind) = normalized_child(&element, &title).and_then(|text| stat_kind(&text))
+        else {
+            continue;
+        };
+        let Some(name) = normalized_child(&element, &name) else {
+            continue;
+        };
+        let Some(value) = normalized_child(&element, &value).and_then(|text| parse_i32(&text))
+        else {
+            continue;
+        };
+        stats.push(RawPlayerStat {
+            source_player_id: None,
+            name,
+            club_logo_path: None,
+            club_name: None,
+            stat: kind,
+            value,
+            rank: None,
+            jersey: None,
+        });
+    }
+    Ok(stats)
+}
+
+fn parse_stat_tables(doc: &Html) -> Result<Vec<RawPlayerStat>> {
+    let tables = Selector::parse(".statistics-table table.table")?;
+    let headers = Selector::parse("thead th[scope='col']")?;
+    let rows = Selector::parse("tbody tr.statistics-row")?;
+    let rank = Selector::parse("span.statistics-index")?;
+    let name = Selector::parse("span.statistics-player-name")?;
+    let cells_selector = Selector::parse("td")?;
+    let mut stats = Vec::new();
+
+    for table in doc.select(&tables) {
+        let Some(stat) = table
+            .select(&headers)
+            .find_map(|element| stat_kind(&element.text().collect::<String>()))
+        else {
+            continue;
+        };
+        for row in table.select(&rows) {
+            let cells: Vec<_> = row.select(&cells_selector).collect();
+            let Some(name) = normalized_child(&row, &name) else {
+                continue;
+            };
+            let Some(value) = cells
+                .get(1)
+                .map(|cell| cell.text().collect::<String>())
+                .map(normalize_text)
+                .and_then(|text| parse_i32(&text))
+            else {
+                continue;
+            };
+            stats.push(RawPlayerStat {
+                source_player_id: None,
+                name,
+                club_logo_path: None,
+                club_name: cells
+                    .first()
+                    .map(|cell| cell.text().collect::<String>())
+                    .map(normalize_text)
+                    .filter(|text| !text.is_empty()),
+                stat,
+                value,
+                rank: normalized_child(&row, &rank).and_then(|text| parse_i32(&text)),
+                jersey: cells
+                    .get(2)
+                    .map(|cell| cell.text().collect::<String>())
+                    .and_then(|text| parse_i32(&text)),
+            });
+        }
+    }
+    Ok(stats)
+}
+
+fn dedupe_player_stats(items: Vec<RawPlayerStat>) -> Vec<RawPlayerStat> {
+    let mut best: HashMap<(String, &'static str), RawPlayerStat> = HashMap::new();
+    for item in items {
+        let key = (normalize_text(item.name.to_lowercase()), item.stat);
+        if let Some(current) = best.get_mut(&key) {
+            merge_player_stat(current, item);
+        } else {
+            best.insert(key, item);
+        }
+    }
+    let mut stats: Vec<_> = best.into_values().collect();
+    stats.sort_by(|a, b| {
+        a.stat
+            .cmp(b.stat)
+            .then(a.rank.unwrap_or(i32::MAX).cmp(&b.rank.unwrap_or(i32::MAX)))
+            .then(a.name.cmp(&b.name))
+    });
+    stats
+}
+
+fn merge_player_stat(current: &mut RawPlayerStat, incoming: RawPlayerStat) {
+    current.source_player_id = current.source_player_id.or(incoming.source_player_id);
+    if incoming.club_logo_path.is_some() {
+        current.club_logo_path = incoming.club_logo_path;
+    }
+    if incoming.club_name.is_some() {
+        current.club_name = incoming.club_name;
+    }
+    current.rank = current.rank.or(incoming.rank);
+    current.jersey = current.jersey.or(incoming.jersey);
+    current.value = current.value.max(incoming.value);
+}
+
+fn normalized_child(element: &scraper::ElementRef, selector: &Selector) -> Option<String> {
+    element
+        .select(selector)
+        .next()
+        .map(|el| el.text().collect::<String>())
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_text(value: String) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_i32(value: &str) -> Option<i32> {
+    let digits: String = value.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+fn stat_kind(value: &str) -> Option<&'static str> {
+    let value = value.to_lowercase();
+    if value.contains("goal") {
+        Some("goals")
+    } else if value.contains("yellow") {
+        Some("yellow_cards")
+    } else if value.contains("red") {
+        Some("red_cards")
+    } else if value.contains("appearance") || value.contains("participation") {
+        Some("appearances")
+    } else {
+        None
+    }
+}
+
+fn anchor_classes(element: &scraper::ElementRef) -> String {
+    element.value().classes().collect::<Vec<_>>().join(" ")
+}
+
+fn ancestor_classes(element: scraper::ElementRef) -> String {
+    let mut classes = String::new();
+    let mut current = Some(element);
+    for _ in 0..12 {
+        let Some(element) = current else { break };
+        classes.push_str(&anchor_classes(&element));
+        classes.push(' ');
+        current = element.parent().and_then(scraper::ElementRef::wrap);
+    }
+    classes
+}
+
+fn player_id_from_href(classes: &str, anchor: &scraper::ElementRef) -> Option<i64> {
+    let href = anchor.value().attr("href")?;
+    if !href.contains("/player/") {
+        return None;
+    }
+    stat_kind(classes)?;
+    href.rsplit('/')
+        .next()
+        .and_then(|segment| segment.split('?').next())
+        .and_then(|segment| segment.parse().ok())
+}
+
+pub fn logo_path(value: Option<&str>) -> Option<String> {
+    let value = value?;
+    let marker = value.find("/clubs-logos/")?;
+    let path = &value[marker..];
+    let path = path.split('?').next().unwrap_or(path);
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
     }
 }
 

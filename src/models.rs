@@ -85,6 +85,77 @@ pub struct Standing {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerStatLine {
+    pub season_id: String,
+    pub group_id: Option<String>,
+    pub stat: String,
+    pub value: i32,
+    pub rank: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Player {
+    pub id: Uuid,
+    pub source: String,
+    pub source_player_id: i64,
+    pub season_id: String,
+    pub club: Option<Club>,
+    pub name: String,
+    pub jersey: Option<i32>,
+    pub position: Option<String>,
+    pub age: Option<i32>,
+    pub nationality: Option<String>,
+    pub nationality_flag_url: Option<String>,
+    pub photo_url: Option<String>,
+    pub source_url: Option<String>,
+    pub stats: Vec<PlayerStatLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerLeaderboardRow {
+    pub player: Player,
+    pub stat: String,
+    pub value: i32,
+    pub rank: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamStats {
+    pub club: Club,
+    pub season_id: String,
+    pub season_label: Option<String>,
+    pub competition_code: String,
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
+    pub position: i32,
+    pub played: i32,
+    pub wins: i32,
+    pub draws: i32,
+    pub losses: i32,
+    pub goals_for: i32,
+    pub goals_against: i32,
+    pub goal_difference: i32,
+    pub points: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamDetail {
+    pub club: Club,
+    pub stats: Vec<TeamStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamRoster {
+    pub club: Club,
+    pub players: Vec<Player>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerDetail {
+    pub player: Player,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormOutcome {
     pub match_id: Uuid,
     pub kickoff_utc: DateTime<Utc>,

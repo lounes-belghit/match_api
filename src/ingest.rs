@@ -7,7 +7,10 @@ use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::scraper::{sources, DiscoveredSeason, MatchDto, SourceClient, SourceSpec};
+use crate::scraper::{
+    logo_path, sources, ClubDto, DiscoveredSeason, MatchDto, PlayerDto, RawPlayerStat,
+    SourceClient, SourceSpec,
+};
 use crate::{AppState, Config};
 
 fn source_client(spec: SourceSpec, config: &Config) -> Result<SourceClient> {
@@ -40,6 +43,9 @@ struct IngestStats {
     matches_upserted: i64,
     events_upserted: i64,
     standings_rebuilt: i64,
+    stats_seen: i64,
+    players_upserted: i64,
+    player_stats_upserted: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -82,7 +88,8 @@ async fn finish_run(
         "UPDATE ingest_runs SET status = $2, finished_at = now(),
             duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
             matches_seen = $3, matches_upserted = $4, events_upserted = $5,
-            standings_rebuilt = $6, error = $7
+            standings_rebuilt = $6, stats_seen = $7,
+            players_upserted = $8, player_stats_upserted = $9, error = $10
          WHERE id = $1",
     )
     .bind(id)
@@ -91,6 +98,9 @@ async fn finish_run(
     .bind(stats.matches_upserted)
     .bind(stats.events_upserted)
     .bind(stats.standings_rebuilt)
+    .bind(stats.stats_seen)
+    .bind(stats.players_upserted)
+    .bind(stats.player_stats_upserted)
     .bind(error)
     .execute(pool)
     .await?;
@@ -274,6 +284,271 @@ async fn ingest_events_inner(app: &AppState, limit: i64, counters: &Counters) ->
     Ok(())
 }
 
+pub async fn ingest_stats(app: &AppState, seasons_limit: usize) -> Result<()> {
+    with_run(app, "stats", |counters| async move {
+        ingest_stats_inner(app, seasons_limit, &counters).await
+    })
+    .await
+}
+
+async fn ingest_stats_inner(
+    app: &AppState,
+    seasons_limit: usize,
+    counters: &Counters,
+) -> Result<()> {
+    for spec in sources() {
+        let client = source_client(spec.clone(), &app.config)?;
+        let seasons = client.discover_seasons().await?;
+        let seasons: Vec<DiscoveredSeason> =
+            seasons.into_iter().take(seasons_limit.max(1)).collect();
+        let source = client.source_name().to_string();
+        info!(source = %source, seasons = seasons.len(), "ingesting player statistics");
+
+        for season in seasons {
+            upsert_season(&app.pool, &source, spec.competition_code, &season).await?;
+            let sid = season_key(&source, season.source_id);
+            let groups = client.groups(season.source_id).await?;
+
+            for group in groups {
+                let Some(gid) = group.id_i64() else { continue };
+                let gid_key = group_key(&source, gid);
+                upsert_group(&app.pool, &source, spec.competition_code, gid, &group.name).await?;
+
+                let clubs = client.clubs(gid).await?;
+                let mut clubs_by_source_id: HashMap<i64, Uuid> = HashMap::new();
+                let mut clubs_by_logo: HashMap<String, Uuid> = HashMap::new();
+                let mut clubs_by_name: HashMap<String, Uuid> = HashMap::new();
+                for club in &clubs {
+                    let Some(club_source_id) = club.id_i64() else {
+                        continue;
+                    };
+                    let club_uuid =
+                        upsert_club(&app.pool, &source, &client.base_url(), club).await?;
+                    clubs_by_source_id.insert(club_source_id, club_uuid);
+                    if let Some(path) = logo_path(Some(&club.image_url)) {
+                        clubs_by_logo.insert(path, club_uuid);
+                    }
+                    clubs_by_name.insert(normalize_name(&club.name), club_uuid);
+                    clubs_by_name.insert(normalize_name(&club.short()), club_uuid);
+                }
+
+                let raw_stats = client.player_stats(gid).await?;
+                let raw_count = raw_stats.len();
+                counters.add(|stats| stats.stats_seen += raw_count as i64);
+
+                let club_pairs: Vec<(i64, Uuid)> = clubs_by_source_id
+                    .iter()
+                    .map(|(source_id, club_uuid)| (*source_id, *club_uuid))
+                    .collect();
+                let roster_tasks: Vec<_> = club_pairs
+                    .into_iter()
+                    .map(|(club_source_id, club_uuid)| {
+                        let client = client.clone();
+                        async move {
+                            let players = client.players(club_source_id, season.source_id).await?;
+                            Ok::<_, anyhow::Error>((club_uuid, players))
+                        }
+                    })
+                    .collect();
+                let mut rosters =
+                    stream::iter(roster_tasks).buffer_unordered(app.config.ingest_concurrency);
+                let mut players_by_source_id: HashMap<i64, Uuid> = HashMap::new();
+                let mut players_by_name: HashMap<String, Uuid> = HashMap::new();
+                while let Some(result) = rosters.next().await {
+                    let (club_uuid, players) =
+                        result.with_context(|| format!("fetching {source} season {sid} roster"))?;
+                    for player in players {
+                        let Some(player_source_id) = player.id_i64() else {
+                            continue;
+                        };
+                        if normalize_name(&player.name).is_empty() {
+                            continue;
+                        }
+                        let player_uuid = upsert_player(
+                            &app.pool,
+                            &client,
+                            &source,
+                            &sid,
+                            Some(club_uuid),
+                            &player,
+                        )
+                        .await?;
+                        counters.add(|stats| stats.players_upserted += 1);
+                        players_by_source_id.insert(player_source_id, player_uuid);
+                        players_by_name.insert(normalize_name(&player.name), player_uuid);
+                    }
+                }
+
+                for raw in raw_stats {
+                    let mut player_uuid = raw
+                        .source_player_id
+                        .and_then(|id| players_by_source_id.get(&id).copied());
+                    if player_uuid.is_none() {
+                        player_uuid = players_by_name.get(&normalize_name(&raw.name)).copied();
+                    }
+                    if player_uuid.is_none() {
+                        let Some(source_player_id) = raw.source_player_id else {
+                            continue;
+                        };
+                        let club_uuid = resolve_stat_club(
+                            &raw,
+                            &clubs_by_source_id,
+                            &clubs_by_logo,
+                            &clubs_by_name,
+                        );
+                        let player = PlayerDto {
+                            id: serde_json::json!(source_player_id),
+                            name: raw.name.clone(),
+                            jersey: raw.jersey,
+                            age: None,
+                            position: String::new(),
+                            imageUrl: None,
+                            nationality: None,
+                        };
+                        player_uuid = Some(
+                            upsert_player(&app.pool, &client, &source, &sid, club_uuid, &player)
+                                .await?,
+                        );
+                        counters.add(|stats| stats.players_upserted += 1);
+                    }
+                    let Some(player_uuid) = player_uuid else {
+                        continue;
+                    };
+                    let result = sqlx::query(
+                        "INSERT INTO player_stats (player_id, season_id, group_id, stat, value, rank)
+                         VALUES ($1,$2,$3,$4,$5,$6)
+                         ON CONFLICT (player_id, season_id, stat) DO UPDATE SET
+                            value = EXCLUDED.value,
+                            rank = COALESCE(EXCLUDED.rank, player_stats.rank),
+                            captured_at = now()",
+                    )
+                    .bind(player_uuid)
+                    .bind(&sid)
+                    .bind(&gid_key)
+                    .bind(raw.stat)
+                    .bind(raw.value)
+                    .bind(raw.rank)
+                    .execute(&app.pool)
+                    .await?;
+                    if result.rows_affected() > 0 {
+                        counters.add(|stats| stats.player_stats_upserted += 1);
+                    }
+                }
+                info!(season = %sid, group = %gid_key, stats = raw_count, "group statistics ingested");
+            }
+        }
+    }
+    app.cache.invalidate_prefix("api:").await;
+    Ok(())
+}
+
+fn normalize_name(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn asset_url(base_url: &str, value: Option<&String>) -> Option<String> {
+    let value = value?;
+    let value = value.trim();
+    if value.is_empty() || value == "-" {
+        return None;
+    }
+    if value.starts_with('/') {
+        Some(format!("{base_url}{value}"))
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn source_id_from_logo(path: &str) -> Option<i64> {
+    let file = path.rsplit('/').next()?;
+    file.split('-').next()?.parse().ok()
+}
+
+fn resolve_stat_club(
+    raw: &RawPlayerStat,
+    clubs_by_source_id: &HashMap<i64, Uuid>,
+    clubs_by_logo: &HashMap<String, Uuid>,
+    clubs_by_name: &HashMap<String, Uuid>,
+) -> Option<Uuid> {
+    if let Some(club_uuid) = raw
+        .club_logo_path
+        .as_deref()
+        .and_then(source_id_from_logo)
+        .and_then(|id| clubs_by_source_id.get(&id))
+    {
+        return Some(*club_uuid);
+    }
+    if let Some(club_uuid) = raw
+        .club_logo_path
+        .as_deref()
+        .and_then(|path| clubs_by_logo.get(path))
+    {
+        return Some(*club_uuid);
+    }
+    raw.club_name
+        .as_deref()
+        .map(normalize_name)
+        .and_then(|name| clubs_by_name.get(&name))
+        .copied()
+}
+
+async fn upsert_player(
+    pool: &PgPool,
+    client: &SourceClient,
+    source: &str,
+    season_id: &str,
+    club_id: Option<Uuid>,
+    player: &PlayerDto,
+) -> Result<Uuid> {
+    let Some(source_player_id) = player.id_i64() else {
+        anyhow::bail!("player without source id");
+    };
+    let base_url = client.base_url();
+    let nationality = player
+        .nationality
+        .as_ref()
+        .map(|value| value.name.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO players (
+            source, source_player_id, season_id, club_id, canonical_name,
+            jersey, position, age, nationality, nationality_flag_url, photo_url, source_url
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (source, source_player_id, season_id) DO UPDATE SET
+            club_id = COALESCE(EXCLUDED.club_id, players.club_id),
+            canonical_name = EXCLUDED.canonical_name,
+            jersey = COALESCE(EXCLUDED.jersey, players.jersey),
+            position = COALESCE(NULLIF(EXCLUDED.position, ''), players.position),
+            age = COALESCE(EXCLUDED.age, players.age),
+            nationality = COALESCE(EXCLUDED.nationality, players.nationality),
+            nationality_flag_url = COALESCE(EXCLUDED.nationality_flag_url, players.nationality_flag_url),
+            photo_url = COALESCE(EXCLUDED.photo_url, players.photo_url),
+            source_url = EXCLUDED.source_url,
+            updated_at = now()
+         RETURNING id",
+    )
+    .bind(source)
+    .bind(source_player_id)
+    .bind(season_id)
+    .bind(club_id)
+    .bind(player.name.trim())
+    .bind(player.jersey)
+    .bind(player.position.trim())
+    .bind(player.age)
+    .bind(nationality)
+    .bind(asset_url(&base_url, player.nationality.as_ref().and_then(|n| n.imageUrl.as_ref())))
+    .bind(asset_url(&base_url, player.imageUrl.as_ref()))
+    .bind(client.player_url(source_player_id))
+    .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
 fn spec_for_url(url: &str) -> Option<(SourceSpec, String)> {
     let spec = sources()
         .into_iter()
@@ -329,12 +604,7 @@ async fn upsert_group(
     Ok(())
 }
 
-async fn upsert_club(
-    pool: &PgPool,
-    source: &str,
-    base_url: &str,
-    club: &crate::scraper::ClubDto,
-) -> Result<Uuid> {
+async fn upsert_club(pool: &PgPool, source: &str, base_url: &str, club: &ClubDto) -> Result<Uuid> {
     let logo = if club.image_url.is_empty() || club.image_url == "-" {
         None
     } else if club.image_url.starts_with('/') {
@@ -437,7 +707,7 @@ async fn club_id(
     pool: &PgPool,
     source: &str,
     base_url: &str,
-    club: &crate::scraper::ClubDto,
+    club: &ClubDto,
 ) -> Result<Option<Uuid>> {
     if club.id_i64().is_none() {
         return Ok(None);

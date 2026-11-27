@@ -18,7 +18,8 @@ use crate::auth::AuthContext;
 use crate::crypto::sha256_hex;
 use crate::models::{
     ApiError, ApiResult, Club, Competition, FootballGroup, FormOutcome, HeadToHead, Match,
-    MatchEvent, Page, Season, Standing, TeamForm,
+    MatchEvent, Page, Player, PlayerDetail, PlayerLeaderboardRow, PlayerStatLine, Season, Standing,
+    TeamDetail, TeamForm, TeamRoster, TeamStats,
 };
 use crate::AppState;
 
@@ -39,8 +40,13 @@ pub fn router(state: AppState) -> Router<AppState> {
                 .route("/matches", get(matches))
                 .route("/matches/{id}", get(match_by_id))
                 .route("/matches/{id}/events", get(match_events))
+                .route("/teams/{id}", get(team_detail))
+                .route("/teams/{id}/players", get(team_players))
                 .route("/teams/{id}/form", get(team_form))
                 .route("/teams/{id}/head-to-head", get(head_to_head))
+                .route("/players/{id}", get(player_detail))
+                .route("/statistics/players", get(player_statistics))
+                .route("/statistics/teams", get(team_statistics))
                 .route("/live", get(live_matches))
                 .route("/standings", get(standings))
                 .route("/search", get(search))
@@ -289,8 +295,9 @@ curl <span class="s">"https://api.example.com/api/v1/matches?per_page=5"</span> 
       <article class="card"><span class="tag">SCHEDULE</span><h3>Fixtures &amp; results</h3><p>Filter by competition, season, round, club, date range and status.</p></article>
       <article class="card"><span class="tag">TABLES</span><h3>Standings</h3><p>Computed from results and grouped by division, with source links.</p></article>
       <article class="card"><span class="tag">NEAR LIVE</span><h3>Match status</h3><p>Polled official sources for current score, minute and freshness.</p></article>
-      <article class="card"><span class="tag">EVENTS</span><h3>Match timeline</h3><p>Goals, cards and substitutions where published by the source.</p></article>
-      <article class="card"><span class="tag">SEARCH</span><h3>Clubs &amp; matches</h3><p>Fast lookup across teams and fixtures with one search endpoint.</p></article>
+        <article class="card"><span class="tag">EVENTS</span><h3>Match timeline</h3><p>Goals, cards and substitutions where published by the source.</p></article>
+        <article class="card"><span class="tag">STATS</span><h3>Players &amp; teams</h3><p>Official scorer, appearance and card leaderboards plus team logos and squads.</p></article>
+        <article class="card"><span class="tag">SEARCH</span><h3>Clubs &amp; matches</h3><p>Fast lookup across teams and fixtures with one search endpoint.</p></article>
       <article class="card"><span class="tag">CACHE</span><h3>Fast &amp; predictable</h3><p>Shared Redis cache and rate limits keep responses quick at load.</p></article>
     </div>
   </section>
@@ -380,7 +387,7 @@ footer{border-top:1px solid var(--line);padding:24px 0 40px;color:var(--muted);f
       <strong>Reference</strong>
       <a href='#auth'>Authentication</a><a href='#quickstart'>Quick start</a><a href='#health'>Health</a>
       <strong>Data</strong>
-      <a href='#competitions'>Competitions</a><a href='#matches'>Matches</a><a href='#teams'>Teams</a><a href='#standings'>Standings</a><a href='#search'>Search</a>
+       <a href='#competitions'>Competitions</a><a href='#matches'>Matches</a><a href='#teams'>Teams</a><a href='#stats'>Statistics</a><a href='#standings'>Standings</a><a href='#search'>Search</a>
       <strong>Reference</strong>
       <a href='#errors'>Errors</a><a href='#limits'>Limits</a><a href='#spec'>Raw spec</a>
     </aside>
@@ -436,8 +443,15 @@ data = r.json()</code></pre>
         <div class="note">Matches include <code>last_polled_at</code>, <code>source_updated_at</code> and <code>stale</code>. <code>stale</code> is true only when a live/near-live match has not been polled recently. <code>ingest.healthy</code> is false after <code>INGEST_ALERT_AFTER_SECS</code> without a successful run, after a newer failure, or when a run appears stuck.</div>
       </section>
       <section class="card" id="teams"><h2>Teams</h2>
+        <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/teams/{id}</span></div><p>One club, its official logo URL, and computed season statistics for every season and group.</p></div>
+        <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/teams/{id}/players?season={id}</span></div><p>Full official squad for one club with jersey, position, nationality, photo URL and all published player statistics. <code>season</code> is optional.</p></div>
         <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/teams/{id}/form</span></div><p>Last finished matches for one club with W/D/L result, opponent, venue and goals. Optional <code>season</code> and <code>limit</code> (1-20, default 5).</p></div>
         <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/teams/{id}/head-to-head?opponent={uuid}</span></div><p>Head-to-head record from up to 500 most recent meetings and a shorter match list. Optional <code>season</code> and <code>limit</code> (1-50, default 10).</p></div>
+      </section>
+      <section class="card" id="stats"><h2>Statistics</h2>
+        <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/statistics/players?season={id}</span></div><p>Paginated player leaderboard from official statistics. Filter by <code>group</code>, <code>competition</code> and <code>stat</code> (<code>goals</code>, <code>appearances</code>, <code>yellow_cards</code>, <code>red_cards</code>).</p></div>
+        <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/statistics/teams?season={id}</span></div><p>Computed statistics and logos for every team in a season. Filter by <code>group</code> and <code>competition</code>; sort with <code>points</code>, <code>goals</code>, <code>wins</code>, <code>goal_difference</code> or <code>played</code>.</p></div>
+        <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/players/{id}</span></div><p>One player with club logo, roster metadata and all published statistics.</p></div>
       </section>
       <section class="card" id="standings"><h2>Standings</h2>
         <div class="endpoint"><div class="endpoint-top"><span class="method">GET</span><span class="path">/api/v1/standings</span></div><p>League table computed from results. Filter by <code>season</code>, <code>group</code> and <code>competition</code>; add <code>scope=home</code> or <code>scope=away</code> for split tables.</p></div>
@@ -477,7 +491,7 @@ data = r.json()</code></pre>
 async fn openapi() -> Json<Value> {
     Json(serde_json::json!({
         "openapi": "3.0.3",
-        "info": {"title": "Algerian Matches API", "version": "1.4.0"},
+        "info": {"title": "Algerian Matches API", "version": "1.5.0"},
         "servers": [{"url": "/"}],
         "components": {
             "securitySchemes": {"ApiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"}},
@@ -515,6 +529,63 @@ async fn openapi() -> Json<Value> {
                     "stale": {"type": "boolean", "description": "True when a live match was not polled recently."}
                 }},
                 "Standing": {"type": "object"},
+                "PlayerStatLine": {"type": "object", "properties": {
+                    "season_id": {"type": "string"},
+                    "group_id": {"type": "string", "nullable": true},
+                    "stat": {"type": "string", "enum": ["goals", "appearances", "yellow_cards", "red_cards"]},
+                    "value": {"type": "integer"},
+                    "rank": {"type": "integer", "nullable": true}
+                }},
+                "Player": {"type": "object", "properties": {
+                    "id": {"type": "string", "format": "uuid"},
+                    "source": {"type": "string"},
+                    "source_player_id": {"type": "integer"},
+                    "season_id": {"type": "string"},
+                    "club": {"allOf": [{"$ref": "#/components/schemas/Club"}], "nullable": true},
+                    "name": {"type": "string"},
+                    "jersey": {"type": "integer", "nullable": true},
+                    "position": {"type": "string", "nullable": true},
+                    "age": {"type": "integer", "nullable": true},
+                    "nationality": {"type": "string", "nullable": true},
+                    "nationality_flag_url": {"type": "string", "nullable": true},
+                    "photo_url": {"type": "string", "nullable": true},
+                    "source_url": {"type": "string", "nullable": true},
+                    "stats": {"type": "array", "items": {"$ref": "#/components/schemas/PlayerStatLine"}}
+                }},
+                "PlayerLeaderboardRow": {"type": "object", "properties": {
+                    "player": {"$ref": "#/components/schemas/Player"},
+                    "stat": {"type": "string", "enum": ["goals", "appearances", "yellow_cards", "red_cards"]},
+                    "value": {"type": "integer"},
+                    "rank": {"type": "integer", "nullable": true}
+                }},
+                "TeamStats": {"type": "object", "properties": {
+                    "club": {"$ref": "#/components/schemas/Club"},
+                    "season_id": {"type": "string"},
+                    "season_label": {"type": "string", "nullable": true},
+                    "competition_code": {"type": "string"},
+                    "group_id": {"type": "string", "nullable": true},
+                    "group_name": {"type": "string", "nullable": true},
+                    "position": {"type": "integer"},
+                    "played": {"type": "integer"},
+                    "wins": {"type": "integer"},
+                    "draws": {"type": "integer"},
+                    "losses": {"type": "integer"},
+                    "goals_for": {"type": "integer"},
+                    "goals_against": {"type": "integer"},
+                    "goal_difference": {"type": "integer"},
+                    "points": {"type": "integer"}
+                }},
+                "TeamDetail": {"type": "object", "properties": {
+                    "club": {"$ref": "#/components/schemas/Club"},
+                    "stats": {"type": "array", "items": {"$ref": "#/components/schemas/TeamStats"}}
+                }},
+                "TeamRoster": {"type": "object", "properties": {
+                    "club": {"$ref": "#/components/schemas/Club"},
+                    "players": {"type": "array", "items": {"$ref": "#/components/schemas/Player"}}
+                }},
+                "PlayerDetail": {"type": "object", "properties": {
+                    "player": {"$ref": "#/components/schemas/Player"}
+                }},
                 "FormOutcome": {"type": "object", "properties": {
                     "match_id": {"type": "string", "format": "uuid"},
                     "kickoff_utc": {"type": "string", "format": "date-time"},
@@ -551,6 +622,12 @@ async fn openapi() -> Json<Value> {
                     "per_page": {"type": "integer"},
                     "total": {"type": "integer"}
                 }},
+                "PlayerStatsPage": {"type": "object", "properties": {
+                    "data": {"type": "array", "items": {"$ref": "#/components/schemas/PlayerLeaderboardRow"}},
+                    "page": {"type": "integer"},
+                    "per_page": {"type": "integer"},
+                    "total": {"type": "integer"}
+                }},
                 "AccountStatus": {"type": "object", "properties": {
                     "account_id": {"type": "string", "format": "uuid"},
                     "key_id": {"type": "string", "format": "uuid"},
@@ -572,7 +649,7 @@ async fn openapi() -> Json<Value> {
                     "stale_matches": {"type": "integer"}
                 }},
                 "IngestRun": {"type": "object", "properties": {
-                    "mode": {"type": "string", "enum": ["backfill", "live", "events"]},
+                    "mode": {"type": "string", "enum": ["backfill", "live", "events", "stats"]},
                     "source": {"type": "string"},
                     "status": {"type": "string", "enum": ["running", "success", "failed"]},
                     "started_at": {"type": "string", "format": "date-time"},
@@ -582,6 +659,9 @@ async fn openapi() -> Json<Value> {
                     "matches_upserted": {"type": "integer"},
                     "events_upserted": {"type": "integer"},
                     "standings_rebuilt": {"type": "integer"},
+                    "stats_seen": {"type": "integer"},
+                    "players_upserted": {"type": "integer"},
+                    "player_stats_upserted": {"type": "integer"},
                     "error": {"type": "string", "nullable": true}
                 }},
                 "IngestStatus": {"type": "object", "properties": {
@@ -627,6 +707,39 @@ async fn openapi() -> Json<Value> {
             }}}}},
             "/api/v1/matches/{id}": {"get": {"summary": "Get match", "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Match"}}}}, "404": {"description": "Not found"}}}},
             "/api/v1/matches/{id}/events": {"get": {"summary": "Get match events", "responses": {"200": {"description": "OK"}}}},
+            "/api/v1/teams/{id}": {"get": {"summary": "Get team and season statistics", "parameters": [
+                {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+            ], "responses": {
+                "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TeamDetail"}}}},
+                "404": {"description": "Club not found"}
+            }}},
+            "/api/v1/teams/{id}/players": {"get": {"summary": "List official squad players", "parameters": [
+                {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+                {"name": "season", "in": "query", "schema": {"type": "string"}}
+            ], "responses": {
+                "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TeamRoster"}}}},
+                "404": {"description": "Club not found"}
+            }}},
+            "/api/v1/players/{id}": {"get": {"summary": "Get player detail", "parameters": [
+                {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+            ], "responses": {
+                "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PlayerDetail"}}}},
+                "404": {"description": "Player not found"}
+            }}},
+            "/api/v1/statistics/players": {"get": {"summary": "Player statistics leaderboard", "parameters": [
+                {"name": "season", "in": "query", "required": true, "schema": {"type": "string"}},
+                {"name": "group", "in": "query", "schema": {"type": "string"}},
+                {"name": "competition", "in": "query", "schema": {"type": "string"}},
+                {"name": "stat", "in": "query", "schema": {"type": "string", "enum": ["goals", "appearances", "yellow_cards", "red_cards"]}},
+                {"name": "page", "in": "query", "schema": {"type": "integer"}},
+                {"name": "per_page", "in": "query", "schema": {"type": "integer", "maximum": 100}}
+            ], "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PlayerStatsPage"}}}}}}},
+            "/api/v1/statistics/teams": {"get": {"summary": "Statistics for every team", "parameters": [
+                {"name": "season", "in": "query", "required": true, "schema": {"type": "string"}},
+                {"name": "group", "in": "query", "schema": {"type": "string"}},
+                {"name": "competition", "in": "query", "schema": {"type": "string"}},
+                {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["points", "goals", "wins", "goal_difference", "played"], "default": "points"}}
+            ], "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/TeamStats"}}}}}}}},
             "/api/v1/teams/{id}/form": {"get": {"summary": "Recent team form", "parameters": [
                 {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
                 {"name": "season", "in": "query", "schema": {"type": "string"}},
@@ -1052,6 +1165,493 @@ async fn match_events(
             })
             .collect(),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayerSeasonQuery {
+    season: Option<String>,
+}
+
+#[derive(Debug, FromRow, Serialize, Deserialize)]
+struct PlayerRow {
+    id: Uuid,
+    source: String,
+    source_player_id: i64,
+    season_id: String,
+    club_id: Option<Uuid>,
+    club_name: Option<String>,
+    club_short: Option<String>,
+    club_logo: Option<String>,
+    canonical_name: String,
+    jersey: Option<i32>,
+    position: Option<String>,
+    age: Option<i32>,
+    nationality: Option<String>,
+    nationality_flag_url: Option<String>,
+    photo_url: Option<String>,
+    source_url: Option<String>,
+}
+
+impl PlayerRow {
+    fn into_player(self) -> Player {
+        let club = match (self.club_id, self.club_name) {
+            (Some(id), Some(name)) => Some(Club {
+                id,
+                name,
+                short_name: self.club_short.unwrap_or_default(),
+                logo_url: self.club_logo,
+            }),
+            _ => None,
+        };
+        Player {
+            id: self.id,
+            source: self.source,
+            source_player_id: self.source_player_id,
+            season_id: self.season_id,
+            club,
+            name: self.canonical_name,
+            jersey: self.jersey,
+            position: self.position,
+            age: self.age,
+            nationality: self.nationality,
+            nationality_flag_url: self.nationality_flag_url,
+            photo_url: self.photo_url,
+            source_url: self.source_url,
+            stats: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, FromRow, Serialize, Deserialize)]
+struct PlayerStatRow {
+    player_id: Uuid,
+    season_id: String,
+    group_id: Option<String>,
+    stat: String,
+    value: i32,
+    rank: Option<i32>,
+}
+
+async fn player_stats_for(
+    app: &AppState,
+    player_ids: &[Uuid],
+    season: Option<&str>,
+) -> ApiResult<HashMap<Uuid, Vec<PlayerStatLine>>> {
+    let mut stats: HashMap<Uuid, Vec<PlayerStatLine>> = HashMap::new();
+    if player_ids.is_empty() {
+        return Ok(stats);
+    }
+    let rows: Vec<PlayerStatRow> = sqlx::query_as(
+        "SELECT player_id, season_id, group_id, stat, value, rank
+         FROM player_stats
+         WHERE player_id = ANY($1::uuid[]) AND ($2::text IS NULL OR season_id = $2)
+         ORDER BY CASE stat WHEN 'goals' THEN 1 WHEN 'appearances' THEN 2
+                  WHEN 'yellow_cards' THEN 3 WHEN 'red_cards' THEN 4 ELSE 5 END,
+                  rank ASC NULLS LAST, value DESC",
+    )
+    .bind(player_ids.to_vec())
+    .bind(season)
+    .fetch_all(&app.pool)
+    .await?;
+    for row in rows {
+        stats
+            .entry(row.player_id)
+            .or_default()
+            .push(PlayerStatLine {
+                season_id: row.season_id,
+                group_id: row.group_id,
+                stat: row.stat,
+                value: row.value,
+                rank: row.rank,
+            });
+    }
+    Ok(stats)
+}
+
+const PLAYER_SELECT: &str = "SELECT p.id, p.source, p.source_player_id, p.season_id,
+    c.id AS club_id, c.canonical_name AS club_name, c.short_name AS club_short, c.logo_url AS club_logo,
+    p.canonical_name, p.jersey, p.position, p.age, p.nationality, p.nationality_flag_url,
+    p.photo_url, p.source_url
+    FROM players p LEFT JOIN clubs c ON c.id = p.club_id";
+
+async fn player_detail(
+    State(app): State<AppState>,
+    Path(id): Path<Uuid>,
+    auth: AuthContext,
+) -> ApiResult<Json<PlayerDetail>> {
+    auth.require("read:matches")?;
+    let key = format!("api:player:{id}");
+    cached(&app, key, async {
+        let row: PlayerRow = sqlx::query_as(&format!("{PLAYER_SELECT} WHERE p.id = $1"))
+            .bind(id)
+            .fetch_optional(&app.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("player not found".into()))?;
+        let stats = player_stats_for(&app, &[id], None).await?;
+        let mut player = row.into_player();
+        player.stats = stats.get(&id).cloned().unwrap_or_default();
+        Ok(PlayerDetail { player })
+    })
+    .await
+}
+
+async fn team_players(
+    State(app): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<PlayerSeasonQuery>,
+    auth: AuthContext,
+) -> ApiResult<Json<TeamRoster>> {
+    auth.require("read:matches")?;
+    let season = query.season.as_deref();
+    let key = format!("api:team-players:{id}:{}", season.unwrap_or("all"));
+    let Json(players) = cached(&app, key, async {
+        let rows: Vec<PlayerRow> = sqlx::query_as(&format!(
+            "{PLAYER_SELECT} WHERE p.club_id = $1 AND ($2::text IS NULL OR p.season_id = $2)
+             ORDER BY CASE p.position WHEN 'Goalkeeper' THEN 1 WHEN 'Defender' THEN 2
+                      WHEN 'Midfielder' THEN 3 WHEN 'Forward' THEN 4 ELSE 5 END,
+                      p.jersey NULLS LAST, p.canonical_name"
+        ))
+        .bind(id)
+        .bind(season)
+        .fetch_all(&app.pool)
+        .await?;
+        let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+        let stats = player_stats_for(&app, &ids, season).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let mut player = row.into_player();
+                if let Some(values) = stats.get(&player.id) {
+                    player.stats = values.clone();
+                }
+                player
+            })
+            .collect::<Vec<Player>>())
+    })
+    .await?;
+    let club = club_by_id(&app, id).await?;
+    Ok(Json(TeamRoster { club, players }))
+}
+
+#[derive(Debug, FromRow, Serialize, Deserialize)]
+struct TeamStatsRow {
+    club_id: Uuid,
+    club_name: String,
+    club_short: String,
+    club_logo: Option<String>,
+    season_id: String,
+    season_label: Option<String>,
+    competition_code: String,
+    group_id: Option<String>,
+    group_name: Option<String>,
+    position: i32,
+    played: i32,
+    wins: i32,
+    draws: i32,
+    losses: i32,
+    goals_for: i32,
+    goals_against: i32,
+    goal_difference: i32,
+    points: i32,
+}
+
+impl From<TeamStatsRow> for TeamStats {
+    fn from(row: TeamStatsRow) -> Self {
+        Self {
+            club: Club {
+                id: row.club_id,
+                name: row.club_name,
+                short_name: row.club_short,
+                logo_url: row.club_logo,
+            },
+            season_id: row.season_id,
+            season_label: row.season_label,
+            competition_code: row.competition_code,
+            group_id: row.group_id,
+            group_name: row.group_name,
+            position: row.position,
+            played: row.played,
+            wins: row.wins,
+            draws: row.draws,
+            losses: row.losses,
+            goals_for: row.goals_for,
+            goals_against: row.goals_against,
+            goal_difference: row.goal_difference,
+            points: row.points,
+        }
+    }
+}
+
+async fn query_team_stats(
+    app: &AppState,
+    club_id: Option<Uuid>,
+    season: Option<&str>,
+    group: Option<&str>,
+    competition: Option<&str>,
+) -> ApiResult<Vec<TeamStats>> {
+    let rows: Vec<TeamStatsRow> = sqlx::query_as(
+        "SELECT c.id AS club_id, c.canonical_name AS club_name, c.short_name AS club_short, c.logo_url AS club_logo,
+            s.season_id, se.label AS season_label, se.competition_code, s.group_id, g.name AS group_name,
+            s.position, s.played, s.wins, s.draws, s.losses, s.goals_for, s.goals_against,
+            s.goal_difference, s.points
+         FROM standings s
+         JOIN clubs c ON c.id = s.club_id
+         JOIN seasons se ON se.id = s.season_id
+         LEFT JOIN groups g ON g.id = s.group_id
+         WHERE ($1::uuid IS NULL OR s.club_id = $1)
+           AND ($2::text IS NULL OR s.season_id = $2)
+           AND ($3::text IS NULL OR s.group_id = $3)
+           AND ($4::text IS NULL OR se.competition_code = $4)",
+    )
+    .bind(club_id)
+    .bind(season)
+    .bind(group)
+    .bind(competition)
+    .fetch_all(&app.pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+fn team_sort(value: Option<&str>) -> ApiResult<&'static str> {
+    match value.unwrap_or("points") {
+        "points" => Ok("points"),
+        "goals" => Ok("goals"),
+        "wins" => Ok("wins"),
+        "goal_difference" => Ok("goal_difference"),
+        "played" => Ok("played"),
+        other => Err(ApiError::BadRequest(format!(
+            "invalid statistics sort: {other}"
+        ))),
+    }
+}
+
+fn team_sort_value(item: &TeamStats, sort: &str) -> i32 {
+    match sort {
+        "goals" => item.goals_for,
+        "wins" => item.wins,
+        "goal_difference" => item.goal_difference,
+        "played" => item.played,
+        _ => item.points,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamStatsQuery {
+    season: String,
+    group: Option<String>,
+    competition: Option<String>,
+    sort: Option<String>,
+}
+
+async fn team_statistics(
+    State(app): State<AppState>,
+    Query(query): Query<TeamStatsQuery>,
+    auth: AuthContext,
+) -> ApiResult<Json<Vec<TeamStats>>> {
+    auth.require("read:matches")?;
+    let sort = team_sort(query.sort.as_deref())?;
+    let key = format!(
+        "api:stats:teams:{}:{}:{}:{}",
+        query.season,
+        query.group.as_deref().unwrap_or("all"),
+        query.competition.as_deref().unwrap_or("all"),
+        sort
+    );
+    cached(&app, key, async {
+        let mut stats = query_team_stats(
+            &app,
+            None,
+            Some(&query.season),
+            query.group.as_deref(),
+            query.competition.as_deref(),
+        )
+        .await?;
+        stats.sort_by(|a, b| {
+            team_sort_value(b, sort)
+                .cmp(&team_sort_value(a, sort))
+                .then(a.club.name.cmp(&b.club.name))
+        });
+        Ok(stats)
+    })
+    .await
+}
+
+async fn team_detail(
+    State(app): State<AppState>,
+    Path(id): Path<Uuid>,
+    auth: AuthContext,
+) -> ApiResult<Json<TeamDetail>> {
+    auth.require("read:matches")?;
+    let key = format!("api:team-detail:{id}");
+    let Json(stats) = cached(&app, key, async {
+        let mut stats = query_team_stats(&app, Some(id), None, None, None).await?;
+        stats.sort_by(|a, b| {
+            b.season_id
+                .cmp(&a.season_id)
+                .then(a.group_name.cmp(&b.group_name))
+                .then(a.position.cmp(&b.position))
+        });
+        Ok(stats)
+    })
+    .await?;
+    let club = club_by_id(&app, id).await?;
+    Ok(Json(TeamDetail { club, stats }))
+}
+
+#[derive(Debug, FromRow, Serialize, Deserialize)]
+struct PlayerLeaderboardRowDb {
+    id: Uuid,
+    source: String,
+    source_player_id: i64,
+    season_id: String,
+    club_id: Option<Uuid>,
+    club_name: Option<String>,
+    club_short: Option<String>,
+    club_logo: Option<String>,
+    canonical_name: String,
+    jersey: Option<i32>,
+    position: Option<String>,
+    age: Option<i32>,
+    nationality: Option<String>,
+    nationality_flag_url: Option<String>,
+    photo_url: Option<String>,
+    source_url: Option<String>,
+    stat: String,
+    value: i32,
+    rank: Option<i32>,
+}
+
+impl PlayerLeaderboardRowDb {
+    fn into_row(self, stats: &HashMap<Uuid, Vec<PlayerStatLine>>) -> PlayerLeaderboardRow {
+        let stat = self.stat;
+        let value = self.value;
+        let rank = self.rank;
+        let mut player = PlayerRow {
+            id: self.id,
+            source: self.source,
+            source_player_id: self.source_player_id,
+            season_id: self.season_id,
+            club_id: self.club_id,
+            club_name: self.club_name,
+            club_short: self.club_short,
+            club_logo: self.club_logo,
+            canonical_name: self.canonical_name,
+            jersey: self.jersey,
+            position: self.position,
+            age: self.age,
+            nationality: self.nationality,
+            nationality_flag_url: self.nationality_flag_url,
+            photo_url: self.photo_url,
+            source_url: self.source_url,
+        }
+        .into_player();
+        player.stats = stats.get(&player.id).cloned().unwrap_or_default();
+        PlayerLeaderboardRow {
+            player,
+            stat,
+            value,
+            rank,
+        }
+    }
+}
+
+fn player_stat_filter(value: Option<&str>) -> ApiResult<Option<&'static str>> {
+    match value {
+        None => Ok(None),
+        Some("goals") => Ok(Some("goals")),
+        Some("appearances") => Ok(Some("appearances")),
+        Some("yellow_cards") => Ok(Some("yellow_cards")),
+        Some("red_cards") => Ok(Some("red_cards")),
+        Some(other) => Err(ApiError::BadRequest(format!("invalid stat: {other}"))),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayerStatisticsQuery {
+    season: String,
+    group: Option<String>,
+    competition: Option<String>,
+    stat: Option<String>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+async fn player_statistics(
+    State(app): State<AppState>,
+    Query(query): Query<PlayerStatisticsQuery>,
+    auth: AuthContext,
+) -> ApiResult<Json<Page<PlayerLeaderboardRow>>> {
+    auth.require("read:matches")?;
+    let stat = player_stat_filter(query.stat.as_deref())?;
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(50).clamp(1, 100);
+    let key = format!(
+        "api:stats:players:{}:{}:{}:{}:{}:{}",
+        query.season,
+        query.group.as_deref().unwrap_or("all"),
+        query.competition.as_deref().unwrap_or("all"),
+        stat.unwrap_or("all"),
+        page,
+        per_page
+    );
+    cached(&app, key, async {
+        #[derive(Debug, FromRow)]
+        struct CountRow {
+            count: i64,
+        }
+        let count: CountRow = sqlx::query_as(
+            "SELECT COUNT(*) AS count
+             FROM player_stats ps
+             JOIN players p ON p.id = ps.player_id
+             JOIN seasons se ON se.id = ps.season_id
+             WHERE ps.season_id = $1
+               AND ($2::text IS NULL OR ps.group_id = $2)
+               AND ($3::text IS NULL OR se.competition_code = $3)
+               AND ($4::text IS NULL OR ps.stat = $4)",
+        )
+        .bind(&query.season)
+        .bind(query.group.as_deref())
+        .bind(query.competition.as_deref())
+        .bind(stat)
+        .fetch_one(&app.pool)
+        .await?;
+        let rows: Vec<PlayerLeaderboardRowDb> = sqlx::query_as(
+            "SELECT p.id, p.source, p.source_player_id, p.season_id,
+                c.id AS club_id, c.canonical_name AS club_name, c.short_name AS club_short, c.logo_url AS club_logo,
+                p.canonical_name, p.jersey, p.position, p.age, p.nationality, p.nationality_flag_url,
+                p.photo_url, p.source_url, ps.stat, ps.value, ps.rank
+             FROM player_stats ps
+             JOIN players p ON p.id = ps.player_id
+             LEFT JOIN clubs c ON c.id = p.club_id
+             JOIN seasons se ON se.id = ps.season_id
+             WHERE ps.season_id = $1
+               AND ($2::text IS NULL OR ps.group_id = $2)
+               AND ($3::text IS NULL OR se.competition_code = $3)
+               AND ($4::text IS NULL OR ps.stat = $4)
+             ORDER BY ps.rank ASC NULLS LAST, ps.value DESC, p.canonical_name ASC
+             LIMIT $5 OFFSET $6",
+        )
+        .bind(&query.season)
+        .bind(query.group.as_deref())
+        .bind(query.competition.as_deref())
+        .bind(stat)
+        .bind(per_page as i64)
+        .bind(((page - 1) * per_page) as i64)
+        .fetch_all(&app.pool)
+        .await?;
+        let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+        let stats = player_stats_for(&app, &ids, Some(&query.season)).await?;
+        Ok(Page {
+            data: rows
+                .into_iter()
+                .map(|row| row.into_row(&stats))
+                .collect(),
+            page,
+            per_page,
+            total: count.count,
+        })
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1597,6 +2197,9 @@ struct IngestRunRow {
     matches_upserted: i64,
     events_upserted: i64,
     standings_rebuilt: i64,
+    stats_seen: i64,
+    players_upserted: i64,
+    player_stats_upserted: i64,
     error: Option<String>,
 }
 
@@ -1653,7 +2256,8 @@ async fn status(State(app): State<AppState>, auth: AuthContext) -> ApiResult<Jso
     .await?;
     let recent: Vec<IngestRunRow> = sqlx::query_as(
         "SELECT mode, source, status, started_at, finished_at, duration_ms,
-                matches_seen, matches_upserted, events_upserted, standings_rebuilt, error
+                matches_seen, matches_upserted, events_upserted, standings_rebuilt,
+                stats_seen, players_upserted, player_stats_upserted, error
          FROM ingest_runs ORDER BY started_at DESC LIMIT 10",
     )
     .fetch_all(&app.pool)
@@ -1719,6 +2323,9 @@ mod tests {
         assert!(html.contains("/openapi.json"));
         assert!(html.contains("/api/v1/teams/{id}/form"));
         assert!(html.contains("/api/v1/teams/{id}/head-to-head"));
+        assert!(html.contains("/api/v1/statistics/players"));
+        assert!(html.contains("/api/v1/statistics/teams"));
+        assert!(html.contains("/api/v1/players/{id}"));
         assert!(html.contains("scope=home"));
         assert!(html.contains("ingest.healthy"));
         assert!(html.contains("business"));
@@ -1735,10 +2342,15 @@ mod tests {
         assert!(rendered.contains("StatusResponse"));
         assert!(rendered.contains("TeamForm"));
         assert!(rendered.contains("HeadToHead"));
+        assert!(rendered.contains("PlayerLeaderboardRow"));
+        assert!(rendered.contains("TeamStats"));
+        assert!(rendered.contains("/api/v1/statistics/players"));
+        assert!(rendered.contains("/api/v1/statistics/teams"));
         assert!(rendered.contains("scope"));
         assert!(rendered.contains("IngestStatus"));
         assert!(rendered.contains("stuck_runs"));
-        assert!(rendered.contains("1.4.0"));
+        assert!(rendered.contains("player_stats_upserted"));
+        assert!(rendered.contains("1.5.0"));
     }
 
     #[test]
@@ -1835,6 +2447,19 @@ mod tests {
         assert_eq!(outcome(2, 1), "W");
         assert_eq!(outcome(1, 1), "D");
         assert_eq!(outcome(0, 3), "L");
+    }
+
+    #[test]
+    fn statistics_filters_accept_only_supported_values() {
+        assert_eq!(team_sort(None).unwrap(), "points");
+        assert_eq!(team_sort(Some("goals")).unwrap(), "goals");
+        assert!(team_sort(Some("objects")).is_err());
+        assert_eq!(player_stat_filter(None).unwrap(), None);
+        assert_eq!(
+            player_stat_filter(Some("yellow_cards")).unwrap(),
+            Some("yellow_cards")
+        );
+        assert!(player_stat_filter(Some("assists")).is_err());
     }
 
     #[test]
