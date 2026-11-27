@@ -1,0 +1,7 @@
+/target
+.env
+*.log
+api_key.txt
+admin_credentials.txt
+frontend/config.js
+/RENDER_SECRETS.txt

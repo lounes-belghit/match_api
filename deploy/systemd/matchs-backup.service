@@ -1,0 +1,10 @@
+[Unit]
+Description=Matchs API database backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/matchs_api/deploy
+ExecStart=%h/matchs_api/deploy/backup.sh
+TimeoutStartSec=900

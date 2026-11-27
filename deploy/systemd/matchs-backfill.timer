@@ -1,0 +1,11 @@
+[Unit]
+Description=Matchs API daily backfill timer
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+AccuracySec=5m
+Persistent=true
+Unit=matchs-backfill.service
+
+[Install]
+WantedBy=timers.target

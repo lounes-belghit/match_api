@@ -1,0 +1,10 @@
+[Unit]
+Description=Matchs API full backfill
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/matchs_api/deploy
+ExecStart=%h/matchs_api/deploy/run_ingest.sh backfill --seasons 3
+TimeoutStartSec=3600

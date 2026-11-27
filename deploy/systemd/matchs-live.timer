@@ -1,0 +1,11 @@
+[Unit]
+Description=Matchs API live refresh timer
+
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=15s
+Persistent=true
+Unit=matchs-live.service
+
+[Install]
+WantedBy=timers.target

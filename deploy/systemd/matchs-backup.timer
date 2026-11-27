@@ -1,0 +1,11 @@
+[Unit]
+Description=Matchs API daily backup timer
+
+[Timer]
+OnCalendar=*-*-* 02:47:00
+AccuracySec=5m
+Persistent=true
+Unit=matchs-backup.service
+
+[Install]
+WantedBy=timers.target
