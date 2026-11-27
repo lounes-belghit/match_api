@@ -449,8 +449,10 @@ data = r.json()</code></pre>
         <table><thead><tr><th>Plan</th><th>Monthly quota</th><th>Rate limit</th></tr></thead><tbody>
           <tr><td><code>free</code></td><td>10,000</td><td>60/min</td></tr>
           <tr><td><code>pro</code></td><td>1,000,000</td><td>300/min</td></tr>
-          <tr><td><code>business</code></td><td>10,000,000</td><td>1,000/min</td></tr>
-        </tbody></table>
+           <tr><td><code>business</code></td><td>10,000,000</td><td>1,000/min</td></tr>
+         </tbody></table>
+         <p id="billing" class="note">Free beta: upgrade requests are paid by USDT and applied after admin approval from <a href="/billing">Billing</a>.</p>
+
         <table><thead><tr><th>Status</th><th>Meaning</th></tr></thead><tbody>
           <tr><td><code>400</code></td><td>Invalid parameter or missing CSRF token on a dashboard form.</td></tr>
           <tr><td><code>401</code></td><td>Missing or invalid API key/session.</td></tr>

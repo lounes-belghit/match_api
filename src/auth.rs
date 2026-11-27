@@ -180,6 +180,17 @@ pub struct SessionAccount {
     pub name: String,
     pub plan: String,
     pub quota: i64,
+    pub is_admin: bool,
+}
+
+impl SessionAccount {
+    pub fn require_admin(&self) -> ApiResult<()> {
+        if self.is_admin {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden("admin access required".into()))
+        }
+    }
 }
 
 pub async fn session_account(app: &AppState, headers: &HeaderMap) -> Option<SessionAccount> {
@@ -191,7 +202,7 @@ pub async fn session_account(app: &AppState, headers: &HeaderMap) -> Option<Sess
         .map(|(_, value)| value.to_string())?;
     let hash = sha256_hex(&token);
     sqlx::query_as::<_, SessionAccount>(
-        "SELECT a.id, a.email, a.name, a.plan, a.quota
+        "SELECT a.id, a.email, a.name, a.plan, a.quota, a.is_admin
          FROM sessions s JOIN accounts a ON a.id = s.account_id
          WHERE s.token_hash = $1 AND s.expires_at > now()",
     )

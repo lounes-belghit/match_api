@@ -149,12 +149,13 @@ async fn init_admin(
         .fetch_one(&state.pool)
         .await?;
     let id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO accounts (email, name, password_hash, plan, quota)
-         VALUES ($1,$2,$3,$4,$5)
+        "INSERT INTO accounts (email, name, password_hash, plan, quota, is_admin)
+         VALUES ($1,$2,$3,$4,$5,TRUE)
          ON CONFLICT (email) DO UPDATE SET
              password_hash = EXCLUDED.password_hash,
              plan = EXCLUDED.plan,
-             quota = EXCLUDED.quota
+             quota = EXCLUDED.quota,
+             is_admin = TRUE
          RETURNING id",
     )
     .bind(email.trim().to_lowercase())
