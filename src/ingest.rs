@@ -197,6 +197,7 @@ async fn refresh_live_inner(app: &AppState, counters: &Counters) -> Result<()> {
             continue;
         };
         let source = client.source_name().to_string();
+        upsert_season(&app.pool, &source, spec.competition_code, &season).await?;
         let sid = season_key(&source, season.source_id);
         let groups = client.groups(season.source_id).await?;
         let (rounds, current) = client.rounds(season.source_id).await?;
@@ -206,6 +207,7 @@ async fn refresh_live_inner(app: &AppState, counters: &Counters) -> Result<()> {
 
         for group in groups {
             let Some(gid) = group.id_i64() else { continue };
+            upsert_group(&app.pool, &source, spec.competition_code, gid, &group.name).await?;
             let matches = client.matches(season.source_id, gid, round).await?;
             counters.add(|stats| stats.matches_seen += matches.len() as i64);
             for m in matches {
